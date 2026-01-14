@@ -4,6 +4,7 @@
   "domain": "https://mysoloplatform.com",
   "twitter_handle": "@alexmercedcoder",
   "custom_head_html": "<!-- Add Analytics Here -->",
+  "code_theme": "github-dark",
   "author_name": "Alex Merced",
   "support_link": "https://github.com/sponsors/alexmercedcoder",
   "email_subscribe_form_url": "",

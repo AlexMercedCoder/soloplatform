@@ -1,7 +1,20 @@
 const fs = require('fs-extra');
 const path = require('path');
 const { marked } = require('marked');
+const { markedHighlight } = require("marked-highlight");
+const hljs = require('highlight.js');
 const matter = require('gray-matter');
+
+// Configure Marked with Highlight.js
+marked.use(
+  markedHighlight({
+    langPrefix: 'hljs language-',
+    highlight(code, lang) {
+      const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+      return hljs.highlight(code, { language }).value;
+    }
+  })
+);
 
 // --- Configuration ---
 const CONFIG_PATH = './config.json';
@@ -133,6 +146,81 @@ async function getFilesRecursively(dir) {
         }
     }
     return results;
+}
+
+async function generateBlogRSS(posts, config) {
+    const rss = `<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0">
+<channel>
+ <title>${escapeXml(config.site_title)} - Blog</title>
+ <description>${escapeXml(config.site_description)}</description>
+ <link>${config.domain}/blog</link>
+ <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+ <pubDate>${new Date().toUTCString()}</pubDate>
+ <ttl>1800</ttl>
+ ${posts.map(post => `
+  <item>
+   <title>${escapeXml(post.title)}</title>
+   <description>${escapeXml(post.description || 'No description')}</description>
+   <link>${config.domain}/blog/${post.slug}.html</link>
+   <guid isPermaLink="true">${config.domain}/blog/${post.slug}.html</guid>
+   <pubDate>${new Date(post.date).toUTCString()}</pubDate>
+  </item>`).join('')}
+</channel>
+</rss>`;
+    
+    await fs.writeFile(path.join(DIST_DIR, 'rss.xml'), rss);
+    console.log('📰 Generated Blog RSS Feed (rss.xml)');
+}
+
+async function generateTagIndicies(tagsMap, config, theme, css) {
+    const tagsDir = path.join(DIST_DIR, 'tags');
+    await fs.ensureDir(tagsDir);
+
+    const sortedTags = Object.keys(tagsMap).sort();
+
+    // 1. Tag Index Page (List of all tags)
+    const tagsListHtml = sortedTags.map(tag => `
+        <a href="/tags/${tag}.html" style="text-decoration:none; color:inherit;">
+            <div style="padding:1rem; margin-bottom:1rem; border:1px solid #ddd; border-radius:8px; display:flex; justify-content:space-between; align-items:center; background: var(--md-sys-color-surface);">
+                <span style="font-weight:bold; font-size:1.2rem;">#${tag}</span>
+                <span style="background:var(--md-sys-color-primary-container); color:var(--md-sys-color-on-primary-container); padding:0.2rem 0.6rem; border-radius:12px; font-size:0.9rem;">
+                    ${tagsMap[tag].length} posts
+                </span>
+            </div>
+        </a>
+    `).join('');
+
+    const indexHtml = renderLayout(`
+        <h1>Topics</h1>
+        <p>Explore content by category.</p>
+        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:1rem; margin-top:2rem;">
+            ${tagsListHtml}
+        </div>
+    `, 'Tags', config, css, { path: '/tags/index.html', description: 'All Topics' });
+
+    await fs.outputFile(path.join(tagsDir, 'index.html'), indexHtml);
+
+    // 2. Individual Tag Pages
+    for (const tag of sortedTags) {
+        const posts = tagsMap[tag].sort((a, b) => b.dateObj - a.dateObj);
+        const postsHtml = posts.map(p => `
+            <div class="card">
+                 ${p.coverImage ? `<a href="/blog/${p.slug}.html"><img src="${p.coverImage}" style="height: 200px; object-fit: cover; width: 100%; margin: 0 0 1rem 0;" /></a>` : ''}
+                <h2><a href="/blog/${p.slug}.html">${p.title}</a></h2>
+                <p class="meta"><small>${p.date} • ${p.readingTime || ''}</small></p>
+            </div>
+        `).join('');
+
+        const tagPageHtml = renderLayout(`
+            <h1>#${tag}</h1>
+            <p><a href="/tags/index.html">← All Topics</a></p>
+            <div class="grid">${postsHtml}</div>
+        `, `#${tag}`, config, css, { path: `/tags/${tag}.html`, description: `Posts tagged with ${tag}` });
+        
+        await fs.outputFile(path.join(tagsDir, `${tag}.html`), tagPageHtml);
+    }
+    console.log(`🏷️ Generated ${sortedTags.length} Tag Pages.`);
 }
 
 // ... existing code ...
@@ -393,6 +481,9 @@ function renderLayout(bodyContent, pageTitle, config, cssContent, seo = {}) {
     <link rel="canonical" href="${url}" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     
+    <!-- Syntax Highlight CSS -->
+    ${config.code_theme ? `<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/${config.code_theme}.min.css">` : ''}
+    
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="${type}" />
     <meta property="og:url" content="${url}" />
@@ -571,6 +662,7 @@ async function build() {
         if (await fs.pathExists(blogSrc)) {
             const files = await getFilesRecursively(blogSrc);
             const posts = [];
+            const tagsMap = {}; 
             
             for (const filePath of files) {
                 if (!filePath.endsWith('.md')) continue;
@@ -626,12 +718,23 @@ async function build() {
                     </section>
                     `;
                 }
+                
+                // Tag Links
+                let tagLinks = '';
+                if (data.tags && Array.isArray(data.tags)) {
+                    tagLinks = ` | ${data.tags.map(t => `<a href="/tags/${t}.html">#${t}</a>`).join(' ')}`;
+                    // Collect for Index
+                    data.tags.forEach(t => {
+                        if (!tagsMap[t]) tagsMap[t] = [];
+                        tagsMap[t].push({ ...data, slug, dateObj: new Date(data.date), coverImage, readingTime });
+                    });
+                }
 
                 // Save Individual Post
                 const postHtml = renderLayout(`
                     <article>
                         <h1>${data.title}</h1>
-                        <p class="meta"><small>${data.date} | ${readingTime} | ${data.tags ? data.tags.join(', ') : ''}</small></p>
+                        <p class="meta"><small>${data.date} | ${readingTime}${tagLinks}</small></p>
                         <img src="${coverImage}" alt="Cover Image" style="margin-bottom: 2rem; box-shadow: 0 4px 12px rgba(0,0,0,0.15);" />
                         <div class="content">${html}</div>
                         ${commentsSection}
@@ -653,9 +756,23 @@ async function build() {
                 </div>
             `).join('');
             
-            const indexHtml = renderLayout(`<h1>Blog</h1>${listHtml}`, 'Blog', config, css, { path: '/blog/index.html', description: 'Latest blog posts' });
+            const indexHtml = renderLayout(`
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <h1>Blog</h1>
+                    <div>
+                        <a href="/tags/index.html" class="btn-support">Topics 🏷️</a>
+                        <a href="/rss.xml" class="btn-support" style="margin-left:0.5rem">RSS 📶</a>
+                    </div>
+                </div>
+                ${listHtml}
+            `, 'Blog', config, css, { path: '/blog/index.html', description: 'Latest blog posts' });
             await fs.outputFile(path.join(blogDist, 'index.html'), indexHtml);
+            
             console.log(`📝 Built Blog (${posts.length} posts).`);
+            
+            // Generate RSS & Tag Pages
+            await generateBlogRSS(posts, config);
+            await generateTagIndicies(tagsMap, config, theme, css);
         }
     }
 
