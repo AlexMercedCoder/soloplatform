@@ -24,13 +24,43 @@ function escapeXml(unsafe) {
     });
 }
 
-async function generateCoverImage(title, slug, theme) {
-    const dir = path.join(DIST_DIR, 'assets', 'covers');
+async function generateDynamicImage(title, slug, theme, type = 'cover') {
+    const dir = path.join(DIST_DIR, 'assets', type === 'hero' ? 'heroes' : 'covers');
     await fs.ensureDir(dir);
     
+    // Adaptive Font Sizing & Wrapping
+    let fontSize = type === 'hero' ? 80 : 64; 
+    let height = type === 'hero' ? 400 : 630;
+    
+    if (title.length > 50) fontSize = fontSize * 0.75;
+    if (title.length > 100) fontSize = fontSize * 0.75;
+
+    const words = title.split(' ');
+    let lines = [];
+    let currentLine = words[0];
+
+    for (let i = 1; i < words.length; i++) {
+        if (currentLine.length + words[i].length < (type === 'hero' ? 25 : 20)) { 
+            currentLine += ' ' + words[i];
+        } else {
+            lines.push(currentLine);
+            currentLine = words[i];
+        }
+    }
+    lines.push(currentLine);
+    if (lines.length > 4) lines = lines.slice(0, 4);
+
+    const textSvg = lines.map((line, i) => {
+        const dy = i === 0 ? "0" : "1.2em";
+        return `<tspan x="50%" dy="${dy}">${escapeXml(line)}</tspan>`;
+    }).join('');
+
+    // Center vertical alignment adjustment based on line count
+    const yStart = 50 - ((lines.length - 1) * 3); 
+
     // SVG with Theme Gradient
     const svg = `
-    <svg width="1200" height="630" xmlns="http://www.w3.org/2000/svg">
+    <svg width="1200" height="${height}" xmlns="http://www.w3.org/2000/svg">
         <defs>
             <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
                 <stop offset="0%" style="stop-color:${theme.colors.primary};stop-opacity:1" />
@@ -43,17 +73,37 @@ async function generateCoverImage(title, slug, theme) {
         <rect width="100%" height="100%" fill="url(#grad)" />
         <rect width="100%" height="100%" fill="url(#grid)" />
         
-        <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="'Roboto', sans-serif" font-weight="bold" font-size="64" fill="${theme.colors.on_primary}">
-            ${escapeXml(title)}
+        <text x="50%" y="${yStart}%" dominant-baseline="middle" text-anchor="middle" font-family="'Roboto', sans-serif" font-weight="bold" font-size="${fontSize}" fill="${theme.colors.on_primary}">
+            ${textSvg}
         </text>
         
-        <rect x="45%" y="60%" width="10%" height="6" fill="${theme.colors.tertiary || theme.colors.on_primary}" rx="3" />
+        ${type !== 'hero' ? `<rect x="45%" y="85%" width="10%" height="6" fill="${theme.colors.tertiary || theme.colors.on_primary}" rx="3" />` : ''}
     </svg>
     `;
     
-    const filePath = path.join(dir, `${slug}.svg`);
+    // Ensure slug is safe file name (replace / with -)
+    const safeFilename = slug.replace(/\//g, '-') + '.svg';
+    const filePath = path.join(dir, safeFilename);
     await fs.writeFile(filePath, svg);
-    return `/assets/covers/${slug}.svg`;
+    return `/assets/${type === 'hero' ? 'heroes' : 'covers'}/${safeFilename}`;
+}
+
+async function generateFavicon(config, theme) {
+    const iconPath = path.join(DIST_DIR, 'favicon.svg');
+    if (await fs.pathExists(iconPath)) return;
+
+    const initial = config.site_title ? config.site_title[0].toUpperCase() : 'S';
+    
+    const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+        <rect width="100" height="100" rx="20" fill="${theme.colors.primary}" />
+        <text x="50" y="50" dominant-baseline="central" text-anchor="middle" font-family="sans-serif" font-weight="bold" font-size="60" fill="${theme.colors.on_primary}">
+            ${initial}
+        </text>
+    </svg>`;
+    
+    await fs.writeFile(iconPath, svg);
+    console.log('✨ Generated favicon.svg');
 }
 
 function calculateReadingTime(content) {
@@ -68,6 +118,21 @@ async function loadJSON(filepath) {
     return fs.readJSON(filepath);
   }
   return {};
+}
+
+async function getFilesRecursively(dir) {
+    let results = [];
+    const list = await fs.readdir(dir);
+    for (const file of list) {
+        const filePath = path.join(dir, file);
+        const stat = await fs.stat(filePath);
+        if (stat && stat.isDirectory()) {
+            results = results.concat(await getFilesRecursively(filePath));
+        } else {
+            results.push(filePath);
+        }
+    }
+    return results;
 }
 
 // ... existing code ...
@@ -326,6 +391,7 @@ function renderLayout(bodyContent, pageTitle, config, cssContent, seo = {}) {
     <title>${fullTitle}</title>
     <meta name="description" content="${description}">
     <link rel="canonical" href="${url}" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="${type}" />
@@ -461,6 +527,9 @@ async function build() {
         console.log('📂 Copied public assets.');
     }
     
+    // Generate Favicon if missing
+    await generateFavicon(config, theme);
+    
     // Global Search Index
     const searchIndex = [];
 
@@ -472,10 +541,18 @@ async function build() {
         const { content, data } = matter(fileContent); // data is frontmatter
         const htmlContent = marked.parse(content);
         
-        // Add Hero if exists
+        // Add Hero if exists or generate one if requested
         let heroHtml = '';
         if (data.hero_image) {
-            heroHtml = `<div class="hero"><img src="${data.hero_image}" alt="Hero Image"></div>`;
+            // Check if user provided path exists in public/assets or external
+            if (data.hero_image.startsWith('http') || await fs.pathExists(path.join(PUBLIC_DIR, data.hero_image.replace(/^\//, '')))) {
+                 heroHtml = `<div class="hero"><img src="${data.hero_image}" alt="Hero Image"></div>`;
+            } else {
+                 // Generate fallback hero
+                 console.log(`⚠️ Hero image not found: ${data.hero_image}. Generating fallback.`);
+                 const heroPath = await generateDynamicImage(data.title || "Welcome", "home-hero", theme, "hero");
+                 heroHtml = `<div class="hero"><img src="${heroPath}" alt="Hero Image"></div>`;
+            }
         }
         
         homeHtml = `${heroHtml} ${htmlContent}`;
@@ -492,20 +569,24 @@ async function build() {
         await fs.ensureDir(blogDist);
         
         if (await fs.pathExists(blogSrc)) {
-            const files = await fs.readdir(blogSrc);
+            const files = await getFilesRecursively(blogSrc);
             const posts = [];
             
-            for (const file of files) {
-                if (!file.endsWith('.md')) continue;
-                const raw = await fs.readFile(path.join(blogSrc, file), 'utf-8');
+            for (const filePath of files) {
+                if (!filePath.endsWith('.md')) continue;
+                
+                // Calculate Slug relative to blogSrc
+                const relativePath = path.relative(blogSrc, filePath);
+                const slug = relativePath.replace('.md', '').replace(/\\/g, '/'); // Maintain forward slashes
+
+                const raw = await fs.readFile(filePath, 'utf-8');
                 const { content, data } = matter(raw);
                 const html = marked.parse(content);
-                const slug = file.replace('.md', '');
                 
                 // Dynamic Cover Image
                 let coverImage = data.cover_image;
                 if (!coverImage) {
-                    coverImage = await generateCoverImage(data.title, slug, theme);
+                    coverImage = await generateDynamicImage(data.title, slug, theme);
                 }
                 
                 // SEO Data
@@ -520,6 +601,32 @@ async function build() {
                 // Reading Time
                 const readingTime = calculateReadingTime(content);
 
+                // Giscus Comments
+                let commentsSection = '';
+                if (config.giscus && config.giscus.repo) {
+                    commentsSection = `
+                    <section style="margin-top: 4rem; border-top: 1px solid var(--md-sys-color-outline); padding-top: 2rem;">
+                        <h3>💬 Comments</h3>
+                        <script src="https://giscus.app/client.js"
+                            data-repo="${config.giscus.repo}"
+                            data-repo-id="${config.giscus.repo_id}"
+                            data-category="${config.giscus.category}"
+                            data-category-id="${config.giscus.category_id}"
+                            data-mapping="${config.giscus.mapping}"
+                            data-strict="${config.giscus.strict}"
+                            data-reactions-enabled="${config.giscus.reactions_enabled}"
+                            data-emit-metadata="${config.giscus.emit_metadata}"
+                            data-input-position="${config.giscus.input_position}"
+                            data-theme="${config.giscus.theme}"
+                            data-lang="${config.giscus.lang}"
+                            data-loading="${config.giscus.loading}"
+                            crossorigin="anonymous"
+                            async>
+                        </script>
+                    </section>
+                    `;
+                }
+
                 // Save Individual Post
                 const postHtml = renderLayout(`
                     <article>
@@ -527,6 +634,7 @@ async function build() {
                         <p class="meta"><small>${data.date} | ${readingTime} | ${data.tags ? data.tags.join(', ') : ''}</small></p>
                         <img src="${coverImage}" alt="Cover Image" style="margin-bottom: 2rem; box-shadow: 0 4px 12px rgba(0,0,0,0.15);" />
                         <div class="content">${html}</div>
+                        ${commentsSection}
                     </article>
                 `, data.title, config, css, seoData);
                 
@@ -558,15 +666,19 @@ async function build() {
         await fs.ensureDir(eventsDist);
         
         if (await fs.pathExists(eventsSrc)) {
-            const files = await fs.readdir(eventsSrc);
+            const files = await getFilesRecursively(eventsSrc);
             const events = [];
             
-            for (const file of files) {
-                if (!file.endsWith('.md')) continue;
-                const raw = await fs.readFile(path.join(eventsSrc, file), 'utf-8');
+            for (const filePath of files) {
+                if (!filePath.endsWith('.md')) continue;
+                
+                 // Calculate Slug
+                const relativePath = path.relative(eventsSrc, filePath);
+                const slug = relativePath.replace('.md', '').replace(/\\/g, '/');
+
+                const raw = await fs.readFile(filePath, 'utf-8');
                 const { content, data } = matter(raw);
                 const html = marked.parse(content);
-                const slug = file.replace('.md', '');
                 
                 // RSVP Button Logic
                 let rsvpBtn = '';
@@ -621,21 +733,25 @@ async function build() {
         await fs.ensureDir(podDist);
         
         if (await fs.pathExists(podSrc)) {
-            const files = await fs.readdir(podSrc);
+            const files = await getFilesRecursively(podSrc);
             const episodes = [];
             
-            for (const file of files) {
-                if (!file.endsWith('.md')) continue;
-                const raw = await fs.readFile(path.join(podSrc, file), 'utf-8');
+            for (const filePath of files) {
+                if (!filePath.endsWith('.md')) continue;
+                
+                  // Calculate Slug
+                const relativePath = path.relative(podSrc, filePath);
+                const slug = relativePath.replace('.md', '').replace(/\\/g, '/');
+
+                const raw = await fs.readFile(filePath, 'utf-8');
                 const { content, data } = matter(raw);
                 const html = marked.parse(content);
-                const slug = file.replace('.md', '');
                 
                 // Audio Player logic
                 let audioPlayer = '';
                 if (data.audio_url) {
                     audioPlayer = `<audio controls src="${data.audio_url}" style="width:100%; margin: 1rem 0;"></audio>
-                                   <p><a href="${data.audio_url}" download>Download MP3</a></p>`;
+                                    <p><a href="${data.audio_url}" download>Download MP3</a></p>`;
                 }
                 
                 const seoData = {

@@ -17,7 +17,10 @@
     ```bash
     npm run dev
     ```
-    This will start a local server and watch for changes in your `/content` folder.
+    This will:
+    *   Start a local server at `http://127.0.0.1:8080`.
+    *   Watch for changes in your `/content` folder and `config.json`.
+    *   Automatically rebuild and reload the page in your browser.
 
 ## 🛠 Configuration
 
@@ -34,6 +37,31 @@ This file controls the global settings of your site.
 Controls the colors and fonts using a simplified Material Design 3 token system.
 
 ## 📝 Managing Content
+
+## 💬 Comments System (Giscus)
+SoloPlatform supports **Giscus**, a comment system powered by GitHub Discussions.
+
+### Setup
+1. Go to [giscus.app](https://giscus.app).
+2. Follow the instructions to get your repository details.
+3. Copy the values into your `config.json` under the `"giscus"` key:
+   ```json
+   "giscus": {
+     "repo": "your-github-user/your-repo",
+     "repo_id": "R_kgD...",
+     "category": "Announcements",
+     "category_id": "DIC_kw...",
+     "mapping": "pathname",
+     "strict": "0",
+     "reactions_enabled": "1",
+     "emit_metadata": "0",
+     "input_position": "bottom",
+     "theme": "light",
+     "lang": "en",
+     "loading": "lazy"
+   }
+   ```
+4. Comments will automatically appear at the bottom of every blog post!
 
 ### Home Page
 Edit `/content/home.md` to change the main landing page.
