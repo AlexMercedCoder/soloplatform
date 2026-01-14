@@ -380,6 +380,21 @@ function generateCSS(theme) {
         main { padding: 0 1rem; }
         .card { padding: 1.5rem; }
     }
+
+    /* --- Footer --- */
+    footer { text-align: center; margin-top: 4rem; padding: 2rem; color: var(--md-sys-color-on-surface-variant); background: var(--md-sys-color-surface-variant); }
+    footer a { color: var(--md-sys-color-primary); text-decoration: none; font-weight: bold; }
+    
+    /* --- Dark Mode Overrides --- */
+    [data-theme="dark"] {
+        --md-sys-color-background: #121212;
+        --md-sys-color-on-background: #e6e1e5;
+        --md-sys-color-surface: #1c1c1c;
+        --md-sys-color-on-surface: #e6e1e5;
+        --md-sys-color-outline: #938f99;
+        --md-sys-color-surface-variant: #49454f;
+        --md-sys-color-on-surface-variant: #cac4d0;
+    }
   `;
 }
 
@@ -484,6 +499,17 @@ function renderLayout(bodyContent, pageTitle, config, cssContent, seo = {}) {
     <!-- Syntax Highlight CSS -->
     ${config.code_theme ? `<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/${config.code_theme}.min.css">` : ''}
     
+    <!-- PWA -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="${config.theme ? config.theme.colors.primary : '#000000'}">
+    
+    <!-- Dark Mode Init -->
+    <script>
+        if (localStorage.getItem('theme') === 'dark') {
+            document.documentElement.setAttribute('data-theme', 'dark');
+        }
+    </script>
+    
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="${type}" />
     <meta property="og:url" content="${url}" />
@@ -530,6 +556,7 @@ function renderLayout(bodyContent, pageTitle, config, cssContent, seo = {}) {
             ${navLinks}
             ${featureLinks}
             <button onclick="document.getElementById('searchDialog').showModal()" style="background:none;border:none;cursor:pointer;font-size:1.2rem;color:inherit;" aria-label="Search">🔍</button>
+            <button id="themeToggle" style="background:none;border:none;cursor:pointer;font-size:1.2rem;color:inherit;" aria-label="Toggle Theme">🌙</button>
             ${supportLink}
         </nav>
     </header>
@@ -553,6 +580,35 @@ function renderLayout(bodyContent, pageTitle, config, cssContent, seo = {}) {
     </dialog>
 
     <script>
+        // Check for Service Worker
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js');
+        }
+
+        // Theme Toggle Logic
+        const toggleBtn = document.getElementById('themeToggle');
+        const root = document.documentElement;
+        
+        // Load saved preference
+        const savedTheme = localStorage.getItem('theme') || 'light';
+        if (savedTheme === 'dark') {
+            root.setAttribute('data-theme', 'dark');
+            toggleBtn.textContent = '☀️';
+        }
+        
+        toggleBtn.addEventListener('click', () => {
+            const current = root.getAttribute('data-theme');
+            if (current === 'dark') {
+                root.setAttribute('data-theme', 'light');
+                localStorage.setItem('theme', 'light');
+                toggleBtn.textContent = '🌙';
+            } else {
+                root.setAttribute('data-theme', 'dark');
+                localStorage.setItem('theme', 'dark');
+                toggleBtn.textContent = '☀️';
+            }
+        });
+
         const searchInput = document.getElementById('searchInput');
         let searchIndex = null;
         
@@ -610,6 +666,8 @@ async function build() {
     // 2. Load Configs
     const config = await loadJSON(CONFIG_PATH);
     const theme = await loadJSON(THEME_PATH);
+
+    config.theme = theme; // Attach theme to config for renderLayout access
     const css = generateCSS(theme);
     
     // 3. Copy Assets
@@ -666,13 +724,29 @@ async function build() {
             
             for (const filePath of files) {
                 if (!filePath.endsWith('.md')) continue;
+
+                const raw = await fs.readFile(filePath, 'utf-8');
+                const { content, data } = matter(raw);
+                
+                // Draft Mode: Skip if published: false (unless DEV mode)
+                // Note: We check data.published explicitly. If undefined, assume true.
+                const isDraft = data.published === false;
+                if (isDraft && process.env.NODE_ENV !== 'drafts') { 
+                    // We use a custom env var or just rely on 'development'. 
+                    // Let's assume standard 'development' env var isn't set by default in build. 
+                    // But we want 'npm run dev' to show them. 'npm run dev' runs 'concurrently ... nodemon ... build.js'.
+                    // We can pass a flag or check env. 
+                    // Simple approach: Check an argument or env.
+                    // Let's assume production build is default. If --drafts passed, show them.
+                    if (!process.argv.includes('--drafts')) continue;
+                }
                 
                 // Calculate Slug relative to blogSrc
                 const relativePath = path.relative(blogSrc, filePath);
                 const slug = relativePath.replace('.md', '').replace(/\\/g, '/'); // Maintain forward slashes
 
-                const raw = await fs.readFile(filePath, 'utf-8');
-                const { content, data } = matter(raw);
+
+
                 const html = marked.parse(content);
                 
                 // Dynamic Cover Image
@@ -746,29 +820,53 @@ async function build() {
                 searchIndex.push({ title: data.title, type: 'Blog', url: `/blog/${slug}.html`, description: seoData.description });
             }
             
-            // Build Blog Index
+            // Build Blog Index (with Pagination)
             posts.sort((a, b) => b.dateObj - a.dateObj);
-            const listHtml = posts.map(p => `
-                <div class="card">
-                    ${p.coverImage ? `<a href="/blog/${p.slug}.html"><img src="${p.coverImage}" style="height: 200px; object-fit: cover; width: 100%; margin: 0 0 1rem 0;" /></a>` : ''}
-                    <h2><a href="/blog/${p.slug}.html">${p.title}</a></h2>
-                    <p class="meta"><small>${p.date} • ${p.readingTime || ''}</small></p>
-                </div>
-            `).join('');
             
-            const indexHtml = renderLayout(`
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <h1>Blog</h1>
-                    <div>
-                        <a href="/tags/index.html" class="btn-support">Topics 🏷️</a>
-                        <a href="/rss.xml" class="btn-support" style="margin-left:0.5rem">RSS 📶</a>
+            const postsPerPage = config.posts_per_page || 10;
+            const totalPages = Math.ceil(posts.length / postsPerPage);
+            
+            for (let i = 0; i < totalPages; i++) {
+                const pageNum = i + 1;
+                const pagePosts = posts.slice(i * postsPerPage, (i + 1) * postsPerPage);
+                
+                const listHtml = pagePosts.map(p => `
+                    <div class="card">
+                        ${p.coverImage ? `<a href="/blog/${p.slug}.html"><img src="${p.coverImage}" style="height: 200px; object-fit: cover; width: 100%; margin: 0 0 1rem 0;" /></a>` : ''}
+                        <h2><a href="/blog/${p.slug}.html">${p.title}</a></h2>
+                        <p class="meta"><small>${p.date} • ${p.readingTime || ''}</small></p>
                     </div>
-                </div>
-                ${listHtml}
-            `, 'Blog', config, css, { path: '/blog/index.html', description: 'Latest blog posts' });
-            await fs.outputFile(path.join(blogDist, 'index.html'), indexHtml);
+                `).join('');
+                
+                // Pagination Controls
+                const prevLink = pageNum > 1 ? (pageNum === 2 ? '/blog/index.html' : `/blog/page/${pageNum - 1}.html`) : null;
+                const nextLink = pageNum < totalPages ? `/blog/page/${pageNum + 1}.html` : null;
+                
+                const paginationHtml = `
+                    <div style="display:flex; justify-content:center; gap:1rem; margin-top:2rem;">
+                        ${prevLink ? `<a href="${prevLink}" class="btn-support">← Previous</a>` : ''}
+                        <span style="align-self:center;">Page ${pageNum} of ${totalPages}</span>
+                        ${nextLink ? `<a href="${nextLink}" class="btn-support">Next →</a>` : ''}
+                    </div>
+                `;
+
+                const pageContent = `
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <h1>Blog</h1>
+                        <div>
+                            <a href="/tags/index.html" class="btn-support">Topics 🏷️</a>
+                            <a href="/rss.xml" class="btn-support" style="margin-left:0.5rem">RSS 📶</a>
+                        </div>
+                    </div>
+                    ${listHtml}
+                    ${totalPages > 1 ? paginationHtml : ''}
+                `;
+
+                const outputFilename = pageNum === 1 ? 'index.html' : `page/${pageNum}.html`;
+                await fs.outputFile(path.join(blogDist, outputFilename), renderLayout(pageContent, `Blog - Page ${pageNum}`, config, css, { path: `/blog/${outputFilename}`, description: `Blog Posts Page ${pageNum}` }));
+            }
             
-            console.log(`📝 Built Blog (${posts.length} posts).`);
+            console.log(`📝 Built Blog (${posts.length} posts, ${totalPages} pages).`);
             
             // Generate RSS & Tag Pages
             await generateBlogRSS(posts, config);
@@ -1007,6 +1105,41 @@ Sitemap: ${domain}/sitemap.xml`;
     // 9. Client-Side Search Index
     await fs.outputFile(path.join(DIST_DIR, 'search.json'), JSON.stringify(searchIndex));
     console.log('🔍 Built search.json');
+
+    // 10. PWA Generation
+    const manifest = {
+        name: config.site_title,
+        short_name: config.site_title,
+        start_url: "/",
+        display: "standalone",
+        background_color: theme.colors.surface,
+        theme_color: theme.colors.primary,
+        icons: [
+            { src: "/favicon.svg", sizes: "192x192", type: "image/svg+xml" },
+            { src: "/favicon.svg", sizes: "512x512", type: "image/svg+xml" }
+        ]
+    };
+    await fs.outputFile(path.join(DIST_DIR, 'manifest.json'), JSON.stringify(manifest));
+    
+    // Simple Cache-First Service Worker
+    const swJs = `
+const CACHE_NAME = 'solo-platform-v1';
+const ASSETS = ['/', '/index.html', '/manifest.json', '/favicon.svg'];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));
+});
+
+self.addEventListener('fetch', (event) => {
+  if (event.request.mode === 'navigate') {
+    event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
+    return;
+  }
+  event.respondWith(caches.match(event.request).then((response) => response || fetch(event.request)));
+});
+    `;
+    await fs.outputFile(path.join(DIST_DIR, 'sw.js'), swJs);
+    console.log('📱 Built PWA (manifest + sw).');
 
     console.log('✅ Build Complete!');
 }
