@@ -56,12 +56,24 @@ async function generateCoverImage(title, slug, theme) {
     return `/assets/covers/${slug}.svg`;
 }
 
+function calculateReadingTime(content) {
+    const wordsPerMinute = 200;
+    const words = content.replace(/[#*`]/g, '').split(/\s+/).length;
+    const minutes = Math.ceil(words / wordsPerMinute);
+    return `${minutes} min read`;
+}
+
 async function loadJSON(filepath) {
   if (await fs.pathExists(filepath)) {
     return fs.readJSON(filepath);
   }
   return {};
 }
+
+// ... existing code ...
+
+// --- Layout Template ---
+
 
 function generateCSS(theme) {
   if (!theme || !theme.colors) return '';
@@ -335,6 +347,8 @@ function renderLayout(bodyContent, pageTitle, config, cssContent, seo = {}) {
     ${JSON.stringify(jsonLd)}
     </script>
 
+    ${config.custom_head_html || ''}
+
     <style>
         ${cssContent}
         /* Basic Reset & Layout */
@@ -358,6 +372,7 @@ function renderLayout(bodyContent, pageTitle, config, cssContent, seo = {}) {
         <nav>
             ${navLinks}
             ${featureLinks}
+            <button onclick="document.getElementById('searchDialog').showModal()" style="background:none;border:none;cursor:pointer;font-size:1.2rem;color:inherit;" aria-label="Search">🔍</button>
             ${supportLink}
         </nav>
     </header>
@@ -371,6 +386,57 @@ function renderLayout(bodyContent, pageTitle, config, cssContent, seo = {}) {
             ${Object.entries(config.social_links || {}).map(([k, v]) => `<a href="${v}">${k}</a>`).join(' | ')}
         </div>
     </footer>
+    <dialog id="searchDialog" style="width: 90%; max-width: 600px; border-radius: 12px; border: none; padding: 2rem; box-shadow: 0 20px 50px rgba(0,0,0,0.3); backdrop-filter: blur(5px);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+            <h2 style="margin:0; font-size:1.5rem;">Search</h2>
+            <form method="dialog"><button style="background:none; border:none; cursor:pointer; font-size:1.2rem;">✕</button></form>
+        </div>
+        <input type="text" id="searchInput" placeholder="Type to find posts, events..." style="width:100%; padding: 1rem; font-size: 1.1rem; border: 2px solid var(--md-sys-color-outline); border-radius: 8px; margin-bottom: 1rem; outline:none;">
+        <div id="searchResults" style="max-height: 400px; overflow-y: auto; display: flex; flex-direction: column; gap: 0.5rem;"></div>
+    </dialog>
+
+    <script>
+        const searchInput = document.getElementById('searchInput');
+        let searchIndex = null;
+        
+        searchInput.addEventListener('input', async (e) => {
+            const q = e.target.value.toLowerCase();
+            const resultsDiv = document.getElementById('searchResults');
+            
+            if (q.length < 2) { 
+                resultsDiv.innerHTML = '<p style="color:#888; text-align:center;">Type 2+ characters...</p>'; 
+                return; 
+            }
+            
+            if (!searchIndex) {
+                 try {
+                    searchIndex = await fetch('/search.json').then(r => r.json());
+                 } catch (err) {
+                    console.error('Failed to load search index');
+                    return;
+                 }
+            }
+            
+            const results = searchIndex.filter(i => 
+                (i.title && i.title.toLowerCase().includes(q)) || 
+                (i.description && i.description.toLowerCase().includes(q))
+            );
+            
+            if (results.length === 0) {
+                resultsDiv.innerHTML = '<p style="text-align:center;">No results found.</p>';
+            } else {
+                resultsDiv.innerHTML = results.map(r => \`
+                    <div style="padding: 1rem; background: var(--md-sys-color-surface); border: 1px solid rgba(0,0,0,0.1); border-radius: 8px;">
+                        <div style="display:flex; justify-content:space-between; margin-bottom:0.25rem;">
+                            <span style="font-size:0.8rem; font-weight:bold; color:var(--md-sys-color-primary); text-transform:uppercase;">\${r.type}</span>
+                        </div>
+                        <a href="\${r.url}" style="font-size: 1.1rem; font-weight: bold; text-decoration: none; color: inherit; display: block; margin-bottom:0.25rem;">\${r.title}</a>
+                        <p style="margin:0; font-size: 0.9rem; color: #666;">\${r.description.substring(0, 80)}...</p>
+                    </div>
+                \`).join('');
+            }
+        });
+    </script>
 </body>
 </html>
     `;
@@ -394,6 +460,9 @@ async function build() {
         await fs.copy(PUBLIC_DIR, DIST_DIR);
         console.log('📂 Copied public assets.');
     }
+    
+    // Global Search Index
+    const searchIndex = [];
 
     // 4. Build Home Page
     const homePath = path.join(CONTENT_DIR, 'home.md');
@@ -447,19 +516,23 @@ async function build() {
                     description: content.substring(0, 150).replace(/[#*`]/g, '') + '...', // Simple excerpt
                     date: data.date
                 };
+                
+                // Reading Time
+                const readingTime = calculateReadingTime(content);
 
                 // Save Individual Post
                 const postHtml = renderLayout(`
                     <article>
                         <h1>${data.title}</h1>
-                        <p class="meta"><small>${data.date} | ${data.tags ? data.tags.join(', ') : ''}</small></p>
+                        <p class="meta"><small>${data.date} | ${readingTime} | ${data.tags ? data.tags.join(', ') : ''}</small></p>
                         <img src="${coverImage}" alt="Cover Image" style="margin-bottom: 2rem; box-shadow: 0 4px 12px rgba(0,0,0,0.15);" />
                         <div class="content">${html}</div>
                     </article>
                 `, data.title, config, css, seoData);
                 
                 await fs.outputFile(path.join(blogDist, `${slug}.html`), postHtml);
-                posts.push({ ...data, slug, dateObj: new Date(data.date), coverImage });
+                posts.push({ ...data, slug, dateObj: new Date(data.date), coverImage, readingTime });
+                searchIndex.push({ title: data.title, type: 'Blog', url: `/blog/${slug}.html`, description: seoData.description });
             }
             
             // Build Blog Index
@@ -468,7 +541,7 @@ async function build() {
                 <div class="card">
                     ${p.coverImage ? `<a href="/blog/${p.slug}.html"><img src="${p.coverImage}" style="height: 200px; object-fit: cover; width: 100%; margin: 0 0 1rem 0;" /></a>` : ''}
                     <h2><a href="/blog/${p.slug}.html">${p.title}</a></h2>
-                    <p><small>${p.date}</small></p>
+                    <p class="meta"><small>${p.date} • ${p.readingTime || ''}</small></p>
                 </div>
             `).join('');
             
@@ -522,6 +595,7 @@ async function build() {
                 
                 await fs.outputFile(path.join(eventsDist, `${slug}.html`), eventHtml);
                 events.push({ ...data, slug, dateObj: new Date(data.event_date) });
+                searchIndex.push({ title: data.title, type: 'Event', url: `/events/${slug}.html`, description: seoData.description });
             }
             
             // Build Events Index
@@ -582,6 +656,7 @@ async function build() {
                 
                 await fs.outputFile(path.join(podDist, `${slug}.html`), epHtml);
                 episodes.push({ ...data, slug, html, dateObj: new Date(data.date) });
+                searchIndex.push({ title: data.title, type: 'Podcast', url: `/podcast/${slug}.html`, description: seoData.description });
             }
             
             // Build Podcast Index
@@ -597,17 +672,18 @@ async function build() {
             const indexHtml = renderLayout(`<h1>Podcast Episodes</h1>${listHtml}`, 'Podcast', config, css, { path: '/podcast/index.html' });
             await fs.outputFile(path.join(podDist, 'index.html'), indexHtml);
             
+            
             // Generate RSS Feed (basic)
             const rssXml = `<?xml version="1.0" encoding="UTF-8" ?>
 <rss version="2.0">
 <channel>
  <title>${config.site_title} Podcast</title>
  <description>${config.site_description}</description>
- <link>https://${config.domain || 'example.com'}</link>
+ <link>${config.domain || 'https://example.com'}</link>
  ${episodes.map(e => `
    <item>
     <title>${e.title}</title>
-    <link>https://${config.domain || 'example.com'}/podcast/${e.slug}.html</link>
+    <link>${config.domain || 'https://example.com'}/podcast/${e.slug}.html</link>
     <description><![CDATA[${e.html}]]></description>
     <enclosure url="${e.audio_url}" length="${e.length_bytes || 0}" type="audio/mpeg" />
     <pubDate>${e.dateObj.toUTCString()}</pubDate>
@@ -619,6 +695,85 @@ async function build() {
             console.log(`🎙️ Built Podcast (${episodes.length} episodes) & RSS Feed.`);
         }
     }
+
+    // 8. Build Sitemap & Robots.txt
+    const domain = config.domain || 'https://example.com';
+    const today = new Date().toISOString();
+    
+    // Collect specific URLs
+    const sitemapUrls = [
+        { loc: `${domain}/`, priority: '1.0' },
+        { loc: `${domain}/index.html`, priority: '0.8' }
+    ];
+
+    // Helper to add Feature Indexes
+    if (config.features.blog?.mode === 'internal') sitemapUrls.push({ loc: `${domain}/blog/index.html`, priority: '0.9' });
+    if (config.features.events?.mode === 'internal') sitemapUrls.push({ loc: `${domain}/events/index.html`, priority: '0.9' });
+    if (config.features.podcast?.mode === 'internal') sitemapUrls.push({ loc: `${domain}/podcast/index.html`, priority: '0.9' });
+
+    // Read generated files to populate sitemap (simple discovery of what we just built)
+    // Actually, we can just walk the dist folder or use the lists we already have if we scoped them higher.
+    // For simplicity/robustness, let's walk the dist folder for .html files.
+    async function getFiles(dir) {
+        let results = [];
+        const list = await fs.readdir(dir);
+        for (const file of list) {
+            const filePath = path.join(dir, file);
+            const stat = await fs.stat(filePath);
+            if (stat && stat.isDirectory()) {
+                // Recursive call
+                const subResults = await getFiles(filePath);
+                results = results.concat(subResults);
+            } else if (file.endsWith('.html')) {
+                results.push(filePath);
+            }
+        }
+        return results;
+    }
+
+    const allHtml = await getFiles(DIST_DIR);
+    const uniqueUrls = new Set(sitemapUrls.map(u => u.loc));
+
+    const xmlItems = sitemapUrls.map(u => `
+  <url>
+    <loc>${u.loc}</loc>
+    <lastmod>${today}</lastmod>
+    <priority>${u.priority}</priority>
+  </url>`).join('');
+
+    // Add all other HTML files not explicitly added
+    const dynamicItems = allHtml.map(p => {
+        const relPath = path.relative(DIST_DIR, p).replace(/\\/g, '/');
+        const url = `${domain}/${relPath}`;
+        if (!uniqueUrls.has(url)) {
+            return `
+  <url>
+    <loc>${url}</loc>
+    <lastmod>${today}</lastmod>
+    <priority>0.6</priority>
+  </url>`;
+        }
+        return '';
+    }).join('');
+
+    const sitemapXml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${xmlItems}
+${dynamicItems}
+</urlset>`;
+
+    await fs.outputFile(path.join(DIST_DIR, 'sitemap.xml'), sitemapXml);
+    console.log('🗺️ Built sitemap.xml');
+
+    const robotsTxt = `User-agent: *
+Allow: /
+Sitemap: ${domain}/sitemap.xml`;
+    await fs.outputFile(path.join(DIST_DIR, 'robots.txt'), robotsTxt);
+     console.log('🤖 Built robots.txt');
+
+    // 9. Client-Side Search Index
+    await fs.outputFile(path.join(DIST_DIR, 'search.json'), JSON.stringify(searchIndex));
+    console.log('🔍 Built search.json');
 
     console.log('✅ Build Complete!');
 }
