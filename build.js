@@ -353,8 +353,8 @@ function generateCSS(theme) {
     }
 
     .card {
-        background: white;
-        border: 1px solid rgba(0,0,0,0.05);
+        background: var(--md-sys-color-surface);
+        border: 1px solid var(--md-sys-color-outline);
         padding: 2rem;
         border-radius: var(--md-sys-shape-corner);
         box-shadow: 0 2px 8px rgba(0,0,0,0.05);
