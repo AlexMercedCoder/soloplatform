@@ -565,7 +565,7 @@ function renderLayout(bodyContent, pageTitle, config, cssContent, seo = {}) {
         ${subscribeSection}
     </main>
     <footer>
-        <p>&copy; ${new Date().getFullYear()} ${config.author_name}. Powered by SoloPlatform.</p>
+        <p>&copy; ${new Date().getFullYear()} ${config.author_name}. ${config.footer_text ? config.footer_text : 'Powered by <a href="https://github.com/AlexMercedCoder/soloplatform" target="_blank">SoloPlatform</a>.'}</p>
         <div class="socials">
             ${Object.entries(config.social_links || {}).map(([k, v]) => `<a href="${v}">${k}</a>`).join(' | ')}
         </div>
